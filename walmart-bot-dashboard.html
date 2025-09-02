@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Walmart Bot Monitoring Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            padding: 20px 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo h1 {
+            color: #2563eb;
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 600;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .status-connected {
+            background: #10b981;
+        }
+
+        .status-disconnected {
+            background: #ef4444;
+        }
+
+        .status-warning {
+            background: #f59e0b;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .controls {
+            display: flex;
+            gap: 12px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 14px;
+        }
+
+        .btn-primary {
+            background: #2563eb;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #1d4ed8;
+            transform: translateY(-1px);
+        }
+
+        .btn-danger {
+            background: #dc2626;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #b91c1c;
+            transform: translateY(-1px);
+        }
+
+        .btn-success {
+            background: #059669;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #047857;
+            transform: translateY(-1px);
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: between;
+            align-items: center;
+            margin-bottom: 20px;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+            padding-bottom: 15px;
+        }
+
+        .card-title {
+            font-size: 18px;
+            font-weight: 700;
+            color: #1f2937;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .metric-value {
+            font-size: 32px;
+            font-weight: 800;
+            color: #2563eb;
+            margin: 10px 0;
+        }
+
+        .metric-label {
+            font-size: 14px;
+            color: #6b7280;
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e5e7eb;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #10b981, #059669);
+            transition: width 0.3s ease;
+            border-radius: 4px;
+        }
+
+        .success-rate {
+            color: #059669;
+        }
+
+        .error-rate {
+            color: #dc2626;
+        }
+
+        .proxy-status {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #f3f4f6;
+        }
+
+        .proxy-status:last-child {
+            border-bottom: none;
+        }
+
+        .proxy-ip {
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 12px;
+            color: #4b5563;
+        }
+
+        .inventory-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid #f3f4f6;
+        }
+
+        .inventory-item:last-child {
+            border-bottom: none;
+        }
+
+        .product-name {
+            font-weight: 600;
+            color: #374151;
+        }
+
+        .stock-level {
+            font-weight: 700;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 12px;
+        }
+
+        .stock-high {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .stock-medium {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .stock-low {
+            background: #fecaca;
+            color: #991b1b;
+        }
+
+        .log-container {
+            grid-column: 1 / -1;
+            background: rgba(0, 0, 0, 0.9);
+            color: #00ff00;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 13px;
+            border-radius: 16px;
+            overflow: hidden;
+            max-height: 400px;
+        }
+
+        .log-header {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .log-content {
+            padding: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            line-height: 1.4;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+            word-wrap: break-word;
+        }
+
+        .log-timestamp {
+            color: #6b7280;
+            margin-right: 10px;
+        }
+
+        .log-success {
+            color: #10b981;
+        }
+
+        .log-error {
+            color: #ef4444;
+        }
+
+        .log-warning {
+            color: #f59e0b;
+        }
+
+        .chart-container {
+            height: 200px;
+            margin-top: 15px;
+        }
+
+        .mini-chart {
+            height: 60px;
+            margin: 10px 0;
+        }
+
+        .stats-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 10px 0;
+        }
+
+        .stats-col {
+            text-align: center;
+        }
+
+        .config-section {
+            background: #f9fafb;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+
+        .config-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 8px 0;
+        }
+
+        .config-input {
+            padding: 6px 10px;
+            border: 1px solid #d1d5db;
+            border-radius: 4px;
+            font-size: 12px;
+            width: 120px;
+        }
+
+        .alert {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            color: #991b1b;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin: 10px 0;
+            font-weight: 600;
+        }
+
+        .order-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #f3f4f6;
+        }
+
+        .order-item:last-child {
+            border-bottom: none;
+        }
+
+        .order-id {
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 12px;
+            color: #6b7280;
+        }
+
+        .order-status {
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .status-success {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .status-pending {
+            background: #ddd6fe;
+            color: #5b21b6;
+        }
+
+        .status-failed {
+            background: #fecaca;
+            color: #991b1b;
+        }
+
+        .responsive-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .header-content {
+                flex-direction: column;
+                gap: 15px;
+            }
+            
+            .controls {
+                flex-wrap: wrap;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <span style="font-size: 28px;">🛒</span>
+                    <h1>Walmart Bot Monitor</h1>
+                </div>
+                
+                <div class="status-indicator">
+                    <div id="connectionStatus" class="status-dot status-connected"></div>
+                    <span id="connectionText">Connected</span>
+                </div>
+                
+                <div class="controls">
+                    <button id="startBot" class="btn btn-success">Start Bot</button>
+                    <button id="stopBot" class="btn btn-danger">Stop Bot</button>
+                    <button id="refreshData" class="btn btn-primary">Refresh</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Dashboard -->
+        <div class="dashboard-grid">
+            <!-- Bot Status Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        🤖 Bot Status
+                    </div>
+                </div>
+                <div class="metric-value" id="botStatus">ACTIVE</div>
+                <div class="metric-label">Current Status</div>
+                <div class="stats-row">
+                    <div class="stats-col">
+                        <div class="metric-value" style="font-size: 20px;" id="uptime">2h 34m</div>
+                        <div class="metric-label">Uptime</div>
+                    </div>
+                    <div class="stats-col">
+                        <div class="metric-value" style="font-size: 20px;" id="lastCheck">12:34 PM</div>
+                        <div class="metric-label">Last Check</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Success Rate Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        📊 Success Metrics
+                    </div>
+                </div>
+                <div class="metric-value success-rate" id="successRate">94.7%</div>
+                <div class="metric-label">Success Rate</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="successProgress" style="width: 94.7%"></div>
+                </div>
+                <div class="stats-row">
+                    <div class="stats-col">
+                        <div class="metric-value" style="font-size: 18px; color: #059669;" id="successCount">143</div>
+                        <div class="metric-label">Successful</div>
+                    </div>
+                    <div class="stats-col">
+                        <div class="metric-value" style="font-size: 18px; color: #dc2626;" id="failureCount">8</div>
+                        <div class="metric-label">Failed</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Proxy Health Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        🔒 Proxy Health
+                    </div>
+                </div>
+                <div id="proxyList">
+                    <div class="proxy-status">
+                        <span class="proxy-ip">192.168.1.101:8080</span>
+                        <span class="status-success">✓ Healthy</span>
+                    </div>
+                    <div class="proxy-status">
+                        <span class="proxy-ip">192.168.1.102:8080</span>
+                        <span class="status-success">✓ Healthy</span>
+                    </div>
+                    <div class="proxy-status">
+                        <span class="proxy-ip">192.168.1.103:8080</span>
+                        <span class="status-failed">✗ Failed</span>
+                    </div>
+                    <div class="proxy-status">
+                        <span class="proxy-ip">192.168.1.104:8080</span>
+                        <span class="status-success">✓ Rotating</span>
+                    </div>
+                </div>
+                <div class="metric-value" style="font-size: 18px; color: #2563eb;">3/4</div>
+                <div class="metric-label">Active Proxies</div>
+            </div>
+
+            <!-- Order History Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        📦 Recent Orders
+                    </div>
+                </div>
+                <div id="orderHistory">
+                    <div class="order-item">
+                        <div>
+                            <div style="font-weight: 600;">iPhone 15 Pro</div>
+                            <div class="order-id">#WM-2024-001234</div>
+                        </div>
+                        <span class="order-status status-success">Completed</span>
+                    </div>
+                    <div class="order-item">
+                        <div>
+                            <div style="font-weight: 600;">MacBook Air M2</div>
+                            <div class="order-id">#WM-2024-001235</div>
+                        </div>
+                        <span class="order-status status-pending">Processing</span>
+                    </div>
+                    <div class="order-item">
+                        <div>
+                            <div style="font-weight: 600;">iPad Pro 12.9"</div>
+                            <div class="order-id">#WM-2024-001236</div>
+                        </div>
+                        <span class="order-status status-failed">Failed</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Inventory Alerts Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        📈 Inventory Alerts
+                    </div>
+                </div>
+                <div id="inventoryAlerts">
+                    <div class="inventory-item">
+                        <div class="product-name">iPhone 15 Pro 256GB</div>
+                        <span class="stock-level stock-high">In Stock</span>
+                    </div>
+                    <div class="inventory-item">
+                        <div class="product-name">MacBook Pro M3</div>
+                        <span class="stock-level stock-medium">Low Stock</span>
+                    </div>
+                    <div class="inventory-item">
+                        <div class="product-name">AirPods Pro 2</div>
+                        <span class="stock-level stock-low">Out of Stock</span>
+                    </div>
+                    <div class="inventory-item">
+                        <div class="product-name">iPad Air M2</div>
+                        <span class="stock-level stock-high">In Stock</span>
+                    </div>
+                </div>
+                <div class="alert">
+                    ⚠️ 2 items need attention
+                </div>
+            </div>
+
+            <!-- Performance Metrics Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        ⚡ Performance
+                    </div>
+                </div>
+                <div class="stats-row">
+                    <div class="stats-col">
+                        <div class="metric-value" style="font-size: 20px;" id="avgResponseTime">2.3s</div>
+                        <div class="metric-label">Avg Response</div>
+                    </div>
+                    <div class="stats-col">
+                        <div class="metric-value" style="font-size: 20px;" id="requestsPerMin">47</div>
+                        <div class="metric-label">Req/Min</div>
+                    </div>
+                </div>
+                <div class="chart-container" id="performanceChart">
+                    <!-- Chart will be rendered here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Configuration Panel -->
+        <div class="card" style="margin-bottom: 30px;">
+            <div class="card-header">
+                <div class="card-title">
+                    ⚙️ Configuration
+                </div>
+            </div>
+            <div class="responsive-grid">
+                <div class="config-section">
+                    <h4 style="margin-bottom: 10px;">Bot Settings</h4>
+                    <div class="config-item">
+                        <label>Check Interval (ms):</label>
+                        <input type="number" class="config-input" id="checkInterval" value="5000">
+                    </div>
+                    <div class="config-item">
+                        <label>Max Retries:</label>
+                        <input type="number" class="config-input" id="maxRetries" value="3">
+                    </div>
+                    <div class="config-item">
+                        <label>Timeout (ms):</label>
+                        <input type="number" class="config-input" id="timeout" value="10000">
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h4 style="margin-bottom: 10px;">Proxy Settings</h4>
+                    <div class="config-item">
+                        <label>Rotation Interval (s):</label>
+                        <input type="number" class="config-input" id="proxyRotation" value="300">
+                    </div>
+                    <div class="config-item">
+                        <label>Health Check (s):</label>
+                        <input type="number" class="config-input" id="proxyHealthCheck" value="60">
+                    </div>
+                    <div class="config-item">
+                        <label>Concurrent Requests:</label>
+                        <input type="number" class="config-input" id="concurrentRequests" value="5">
+                    </div>
+                </div>
+            </div>
+            <div style="margin-top: 15px;">
+                <button id="saveConfig" class="btn btn-primary">Save Configuration</button>
+                <button id="resetConfig" class="btn btn-danger" style="margin-left: 10px;">Reset to Default</button>
+            </div>
+        </div>
+
+        <!-- Live Logs -->
+        <div class="log-container">
+            <div class="log-header">
+                <div class="card-title" style="color: #ffffff;">
+                    📋 Live Request/Response Logs
+                </div>
+            </div>
+            <div class="log-content" id="logContent">
+                <div class="log-entry">
+                    <span class="log-timestamp">[12:34:21]</span>
+                    <span class="log-success">[SUCCESS]</span> 
+                    Product check completed - iPhone 15 Pro: In Stock (47 units)
+                </div>
+                <div class="log-entry">
+                    <span class="log-timestamp">[12:34:18]</span>
+                    <span class="log-success">[INFO]</span> 
+                    Proxy rotation: 192.168.1.101:8080 → 192.168.1.102:8080
+                </div>
+                <div class="log-entry">
+                    <span class="log-timestamp">[12:34:15]</span>
+                    <span class="log-warning">[WARNING]</span> 
+                    Rate limit detected, switching proxy
+                </div>
+                <div class="log-entry">
+                    <span class="log-timestamp">[12:34:12]</span>
+                    <span class="log-success">[SUCCESS]</span> 
+                    Order placed successfully: #WM-2024-001234
+                </div>
+                <div class="log-entry">
+                    <span class="log-timestamp">[12:34:09]</span>
+                    <span class="log-error">[ERROR]</span> 
+                    Proxy 192.168.1.103:8080 failed health check
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script>
+        class WalmartBotDashboard {
+            constructor() {
+                this.ws = null;
+                this.reconnectAttempts = 0;
+                this.maxReconnectAttempts = 5;
+                this.reconnectDelay = 3000;
+                this.isConnected = false;
+                
+                this.init();
+                this.setupEventListeners();
+                this.connectWebSocket();
+                this.startDataSimulation();
+            }
+
+            init() {
+                this.updateConnectionStatus(false);
+                this.initializeCharts();
+            }
+
+            setupEventListeners() {
+                // Bot controls
+                document.getElementById('startBot').addEventListener('click', () => this.startBot());
+                document.getElementById('stopBot').addEventListener('click', () => this.stopBot());
+                document.getElementById('refreshData').addEventListener('click', () => this.refreshData());
+                
+                // Configuration
+                document.getElementById('saveConfig').addEventListener('click', () => this.saveConfiguration());
+                document.getElementById('resetConfig').addEventListener('click', () => this.resetConfiguration());
+            }
+
+            connectWebSocket() {
+                const wsUrl = 'ws://localhost:8080/ws'; // Adjust based on Go backend
+                
+                try {
+                    this.ws = new WebSocket(wsUrl);
+                    
+                    this.ws.onopen = (event) => {
+                        console.log('WebSocket connected');
+                        this.isConnected = true;
+                        this.reconnectAttempts = 0;
+                        this.updateConnectionStatus(true);
+                        this.addLogEntry('Connected to Walmart bot backend', 'success');
+                    };
+                    
+                    this.ws.onmessage = (event) => {
+                        try {
+                            const data = JSON.parse(event.data);
+                            this.handleWebSocketMessage(data);
+                        } catch (error) {
+                            console.error('Error parsing WebSocket message:', error);
+                        }
+                    };
+                    
+                    this.ws.onclose = (event) => {
+                        console.log('WebSocket disconnected');
+                        this.isConnected = false;
+                        this.updateConnectionStatus(false);
+                        this.addLogEntry('Disconnected from backend', 'error');
+                        this.attemptReconnect();
+                    };
+                    
+                    this.ws.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        this.addLogEntry(`WebSocket error: ${error.message || 'Connection failed'}`, 'error');
+                    };
+                    
+                } catch (error) {
+                    console.error('Failed to create WebSocket connection:', error);
+                    this.updateConnectionStatus(false);
+                    this.attemptReconnect();
+                }
+            }
+
+            attemptReconnect() {
+                if (this.reconnectAttempts < this.maxReconnectAttempts) {
+                    this.reconnectAttempts++;
+                    this.addLogEntry(`Attempting to reconnect... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`, 'warning');
+                    
+                    setTimeout(() => {
+                        this.connectWebSocket();
+                    }, this.reconnectDelay * this.reconnectAttempts);
+                } else {
+                    this.addLogEntry('Max reconnection attempts reached. Please refresh the page.', 'error');
+                }
+            }
+
+            handleWebSocketMessage(data) {
+                switch (data.type) {
+                    case 'bot_status':
+                        this.updateBotStatus(data.payload);
+                        break;
+                    case 'success_metrics':
+                        this.updateSuccessMetrics(data.payload);
+                        break;
+                    case 'proxy_health':
+                        this.updateProxyHealth(data.payload);
+                        break;
+                    case 'order_update':
+                        this.updateOrderHistory(data.payload);
+                        break;
+                    case 'inventory_alert':
+                        this.updateInventoryAlerts(data.payload);
+                        break;
+                    case 'performance_metrics':
+                        this.updatePerformanceMetrics(data.payload);
+                        break;
+                    case 'log_entry':
+                        this.addLogEntry(data.payload.message, data.payload.level);
+                        break;
+                    default:
+                        console.log('Unknown message type:', data.type);
+                }
+            }
+
+            updateConnectionStatus(connected) {
+                const statusDot = document.getElementById('connectionStatus');
+                const statusText = document.getElementById('connectionText');
+                
+                if (connected) {
+                    statusDot.className = 'status-dot status-connected';
+                    statusText.textContent = 'Connected';
+                } else {
+                    statusDot.className = 'status-dot status-disconnected';
+                    statusText.textContent = 'Disconnected';
+                }
+            }
+
+            updateBotStatus(status) {
+                document.getElementById('botStatus').textContent = status.status;
+                document.getElementById('uptime').textContent = status.uptime;
+                document.getElementById('lastCheck').textContent = status.lastCheck;
+            }
+
+            updateSuccessMetrics(metrics) {
+                const successRate = ((metrics.successful / (metrics.successful + metrics.failed)) * 100).toFixed(1);
+                document.getElementById('successRate').textContent = `${successRate}%`;
+                document.getElementById('successProgress').style.width = `${successRate}%`;
+                document.getElementById('successCount').textContent = metrics.successful;
+                document.getElementById('failureCount').textContent = metrics.failed;
+            }
+
+            updateProxyHealth(proxies) {
+                const proxyList = document.getElementById('proxyList');
+                proxyList.innerHTML = '';
+                
+                let activeCount = 0;
+                proxies.forEach(proxy => {
+                    if (proxy.healthy) activeCount++;
+                    
+                    const proxyDiv = document.createElement('div');
+                    proxyDiv.className = 'proxy-status';
+                    proxyDiv.innerHTML = `
+                        <span class="proxy-ip">${proxy.ip}:${proxy.port}</span>
+                        <span class="${proxy.healthy ? 'status-success' : 'status-failed'}">
+                            ${proxy.healthy ? '✓ Healthy' : '✗ Failed'}
+                        </span>
+                    `;
+                    proxyList.appendChild(proxyDiv);
+                });
+                
+                const activeProxies = proxyList.parentElement.querySelector('.metric-value');
+                activeProxies.textContent = `${activeCount}/${proxies.length}`;
+            }
+
+            updateOrderHistory(orders) {
+                const orderHistory = document.getElementById('orderHistory');
+                orderHistory.innerHTML = '';
+                
+                orders.slice(0, 3).forEach(order => {
+                    const orderDiv = document.createElement('div');
+                    orderDiv.className = 'order-item';
+                    orderDiv.innerHTML = `
+                        <div>
+                            <div style="font-weight: 600;">${order.product}</div>
+                            <div class="order-id">#${order.id}</div>
+                        </div>
+                        <span class="order-status status-${order.status}">${order.status}</span>
+                    `;
+                    orderHistory.appendChild(orderDiv);
+                });
+            }
+
+            updateInventoryAlerts(inventory) {
+                const inventoryAlerts = document.getElementById('inventoryAlerts');
+                inventoryAlerts.innerHTML = '';
+                
+                let alertCount = 0;
+                inventory.forEach(item => {
+                    if (item.level === 'low' || item.level === 'out') alertCount++;
+                    
+                    const itemDiv = document.createElement('div');
+                    itemDiv.className = 'inventory-item';
+                    itemDiv.innerHTML = `
+                        <div class="product-name">${item.name}</div>
+                        <span class="stock-level stock-${item.level === 'high' ? 'high' : item.level === 'medium' ? 'medium' : 'low'}">
+                            ${item.status}
+                        </span>
+                    `;
+                    inventoryAlerts.appendChild(itemDiv);
+                });
+                
+                // Update alert message
+                const alert = inventoryAlerts.parentElement.querySelector('.alert');
+                if (alertCount > 0) {
+                    alert.textContent = `⚠️ ${alertCount} items need attention`;
+                    alert.style.display = 'block';
+                } else {
+                    alert.style.display = 'none';
+                }
+            }
+
+            updatePerformanceMetrics(metrics) {
+                document.getElementById('avgResponseTime').textContent = `${metrics.avgResponseTime}s`;
+                document.getElementById('requestsPerMin').textContent = metrics.requestsPerMinute;
+            }
+
+            addLogEntry(message, level = 'info') {
+                const logContent = document.getElementById('logContent');
+                const timestamp = new Date().toLocaleTimeString();
+                
+                const logEntry = document.createElement('div');
+                logEntry.className = 'log-entry';
+                logEntry.innerHTML = `
+                    <span class="log-timestamp">[${timestamp}]</span>
+                    <span class="log-${level}">[${level.toUpperCase()}]</span> 
+                    ${message}
+                `;
+                
+                logContent.insertBefore(logEntry, logContent.firstChild);
+                
+                // Keep only last 50 entries
+                while (logContent.children.length > 50) {
+                    logContent.removeChild(logContent.lastChild);
+                }
+            }
+
+            startBot() {
+                this.sendCommand('start_bot');
+                this.addLogEntry('Bot start command sent', 'info');
+            }
+
+            stopBot() {
+                if (confirm('Are you sure you want to stop the bot?')) {
+                    this.sendCommand('stop_bot');
+                    this.addLogEntry('Bot stop command sent', 'warning');
+                }
+            }
+
+            refreshData() {
+                this.sendCommand('refresh_data');
+                this.addLogEntry('Data refresh requested', 'info');
+            }
+
+            saveConfiguration() {
+                const config = {
+                    checkInterval: document.getElementById('checkInterval').value,
+                    maxRetries: document.getElementById('maxRetries').value,
+                    timeout: document.getElementById('timeout').value,
+                    proxyRotation: document.getElementById('proxyRotation').value,
+                    proxyHealthCheck: document.getElementById('proxyHealthCheck').value,
+                    concurrentRequests: document.getElementById('concurrentRequests').value
+                };
+                
+                this.sendCommand('update_config', config);
+                this.addLogEntry('Configuration saved', 'success');
+            }
+
+            resetConfiguration() {
+                if (confirm('Reset configuration to defaults?')) {
+                    document.getElementById('checkInterval').value = '5000';
+                    document.getElementById('maxRetries').value = '3';
+                    document.getElementById('timeout').value = '10000';
+                    document.getElementById('proxyRotation').value = '300';
+                    document.getElementById('proxyHealthCheck').value = '60';
+                    document.getElementById('concurrentRequests').value = '5';
+                    
+                    this.addLogEntry('Configuration reset to defaults', 'info');
+                }
+            }
+
+            sendCommand(command, payload = null) {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({
+                        type: 'command',
+                        command: command,
+                        payload: payload,
+                        timestamp: new Date().toISOString()
+                    }));
+                } else {
+                    this.addLogEntry('Cannot send command: Not connected to backend', 'error');
+                }
+            }
+
+            // Demo data simulation (remove in production)
+            startDataSimulation() {
+                // Simulate live updates every 5 seconds
+                setInterval(() => {
+                    if (!this.isConnected) {
+                        // Simulate random metrics when not connected
+                        this.simulateMetrics();
+                    }
+                }, 5000);
+
+                // Simulate log entries
+                setInterval(() => {
+                    if (!this.isConnected) {
+                        this.simulateLogEntry();
+                    }
+                }, 3000);
+            }
+
+            simulateMetrics() {
+                // Simulate success rate changes
+                const currentRate = parseFloat(document.getElementById('successRate').textContent);
+                const newRate = Math.max(85, Math.min(99, currentRate + (Math.random() - 0.5) * 2));
+                document.getElementById('successRate').textContent = `${newRate.toFixed(1)}%`;
+                document.getElementById('successProgress').style.width = `${newRate}%`;
+                
+                // Update counters
+                const currentSuccess = parseInt(document.getElementById('successCount').textContent);
+                document.getElementById('successCount').textContent = currentSuccess + Math.floor(Math.random() * 3);
+                
+                // Update performance metrics
+                const responseTime = (1.5 + Math.random() * 2).toFixed(1);
+                document.getElementById('avgResponseTime').textContent = `${responseTime}s`;
+                
+                const requestsPerMin = Math.floor(40 + Math.random() * 20);
+                document.getElementById('requestsPerMin').textContent = requestsPerMin;
+            }
+
+            simulateLogEntry() {
+                const messages = [
+                    'Product availability check completed',
+                    'Proxy health check passed',
+                    'Order processing initiated',
+                    'Inventory level updated',
+                    'Rate limit handled successfully',
+                    'Cart item added successfully',
+                    'Payment processing completed',
+                    'Order confirmation received'
+                ];
+                
+                const levels = ['success', 'info', 'warning'];
+                const message = messages[Math.floor(Math.random() * messages.length)];
+                const level = levels[Math.floor(Math.random() * levels.length)];
+                
+                this.addLogEntry(message, level);
+            }
+
+            initializeCharts() {
+                // Initialize any charts here if using a charting library
+                // For now, we'll use placeholder
+            }
+        }
+
+        // Initialize dashboard when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new WalmartBotDashboard();
+        });
+    </script>
+</body>
+</html>

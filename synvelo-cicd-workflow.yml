@@ -1,0 +1,429 @@
+# .github/workflows/synvelo-deploy.yml
+name: Synvelo Dual-Site Deployment Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: '18'
+  STAGING_FRONTEND_A_URL: 'https://staging-app.synvelo.dev'
+  STAGING_FRONTEND_B_URL: 'https://staging-dashboard.synvelo.dev'
+  PRODUCTION_FRONTEND_A_URL: 'https://app.synvelo.com'
+  PRODUCTION_FRONTEND_B_URL: 'https://dashboard.synvelo.com'
+
+jobs:
+  # =====================================================
+  # QUALITY GATE - Code Quality and Security Checks
+  # =====================================================
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+    outputs:
+      should-deploy: ${{ steps.changes.outputs.should-deploy }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm run install:workspaces
+
+      - name: Detect changes
+        id: changes
+        uses: dorny/paths-filter@v2
+        with:
+          filters: |
+            frontend-a:
+              - 'apps/site-a/**'
+              - 'packages/shared/**'
+            frontend-b:
+              - 'apps/site-b/**'
+              - 'packages/shared/**'
+            backend:
+              - 'apps/api/**'
+              - 'apps/websocket/**'
+            infrastructure:
+              - '.github/workflows/**'
+              - 'docker/**'
+              - 'railway.json'
+
+      - name: ESLint & Prettier
+        run: |
+          npm run lint
+          npm run format:check
+
+      - name: TypeScript type checking
+        run: npm run typecheck
+
+      - name: Unit tests with coverage
+        run: |
+          npm run test:coverage
+          echo "Coverage threshold: 80%"
+
+      - name: Security vulnerability scan
+        run: |
+          npm audit --audit-level=high
+          npm run security:scan
+
+      - name: Dependency audit
+        run: npm run audit:dependencies
+
+  # =====================================================
+  # BUILD & TEST - Parallel builds and comprehensive testing
+  # =====================================================
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    needs: quality-gate
+    strategy:
+      matrix:
+        app: [site-a, site-b, api, websocket]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: |
+          if [[ "${{ matrix.app }}" == "site-a" || "${{ matrix.app }}" == "site-b" ]]; then
+            npm run build --workspace=apps/${{ matrix.app }}
+          else
+            npm run build --workspace=apps/${{ matrix.app }}
+            npm run docker:build --workspace=apps/${{ matrix.app }}
+          fi
+
+      - name: Run integration tests
+        run: npm run test:integration --workspace=apps/${{ matrix.app }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.app }}-build
+          path: |
+            apps/${{ matrix.app }}/dist
+            apps/${{ matrix.app }}/.next
+          retention-days: 1
+
+  # =====================================================
+  # E2E TESTING - End-to-end testing with Playwright
+  # =====================================================
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+
+      - name: Start test environment
+        run: |
+          npm run start:test-env &
+          sleep 30
+          curl -f http://localhost:3000/health
+
+      - name: Run E2E tests
+        run: npm run test:e2e
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/synvelo_test
+          REDIS_URL: redis://localhost:6379
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: playwright-report/
+
+  # =====================================================
+  # STAGING DEPLOYMENT - Automated staging deployment
+  # =====================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [quality-gate, build-and-test, e2e-tests]
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: ${{ env.STAGING_FRONTEND_A_URL }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Deploy Frontend A to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_A_ID }}
+          working-directory: apps/site-a
+          alias-domains: staging-app.synvelo.dev
+
+      - name: Deploy Frontend B to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_B_ID }}
+          working-directory: apps/site-b
+          alias-domains: staging-dashboard.synvelo.dev
+
+      - name: Deploy Backend to Railway
+        run: |
+          npm install -g @railway/cli
+          railway login --token ${{ secrets.RAILWAY_TOKEN }}
+          railway deploy --service api-gateway --environment staging
+          railway deploy --service websocket-service --environment staging
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Run database migrations
+        run: |
+          railway run --service api-gateway --environment staging -- npm run db:migrate
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Smoke tests on staging
+        run: |
+          npm run test:smoke -- --base-url=${{ env.STAGING_FRONTEND_A_URL }}
+          npm run test:smoke -- --base-url=${{ env.STAGING_FRONTEND_B_URL }}
+
+      - name: Visual regression testing
+        run: npm run test:visual-regression -- --environment=staging
+
+      - name: Notify team
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: 'Staging deployment completed for Synvelo'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  # =====================================================
+  # PRODUCTION DEPLOYMENT - Manual approval with blue-green strategy
+  # =====================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: ${{ env.PRODUCTION_FRONTEND_A_URL }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Pre-deployment health check
+        run: |
+          curl -f https://api.synvelo.com/health
+          npm run verify:production-ready
+
+      - name: Create deployment backup
+        run: |
+          railway run --service api-gateway --environment production -- npm run db:backup
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Deploy Frontend A (Blue-Green)
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_A_ID }}
+          working-directory: apps/site-a
+          alias-domains: |
+            app.synvelo.com
+            www.synvelo.com
+
+      - name: Deploy Frontend B (Blue-Green)
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_B_ID }}
+          working-directory: apps/site-b
+          alias-domains: dashboard.synvelo.com
+
+      - name: Deploy Backend (Rolling Update)
+        run: |
+          railway deploy --service api-gateway --environment production
+          railway deploy --service websocket-service --environment production
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Run production migrations
+        run: |
+          railway run --service api-gateway --environment production -- npm run db:migrate:production
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Health checks and monitoring
+        run: |
+          # Wait for deployment to stabilize
+          sleep 60
+          
+          # Verify all services are healthy
+          curl -f ${{ env.PRODUCTION_FRONTEND_A_URL }}/health
+          curl -f ${{ env.PRODUCTION_FRONTEND_B_URL }}/health
+          curl -f https://api.synvelo.com/health
+          
+          # Check database connectivity
+          npm run verify:db-connection
+
+      - name: Performance regression tests
+        run: |
+          npm run test:performance -- --base-url=${{ env.PRODUCTION_FRONTEND_A_URL }}
+          npm run lighthouse:ci
+
+      - name: Update monitoring and alerts
+        run: |
+          npm run monitoring:update-deployment
+          npm run alerts:reset-baselines
+
+      - name: Notify success
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          text: |
+            🚀 Production deployment successful!
+            - Site A: ${{ env.PRODUCTION_FRONTEND_A_URL }}
+            - Site B: ${{ env.PRODUCTION_FRONTEND_B_URL }}
+            - API: https://api.synvelo.com
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  # =====================================================
+  # ROLLBACK - Emergency rollback procedure
+  # =====================================================
+  rollback-production:
+    name: Emergency Rollback
+    runs-on: ubuntu-latest
+    if: failure() && github.ref == 'refs/heads/main'
+    environment:
+      name: production
+    
+    steps:
+      - name: Rollback Frontend deployments
+        run: |
+          # Rollback to previous Vercel deployment
+          vercel rollback --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Rollback Backend services
+        run: |
+          railway rollback --service api-gateway --environment production
+          railway rollback --service websocket-service --environment production
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Restore database if needed
+        run: |
+          railway run --service api-gateway --environment production -- npm run db:rollback
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Verify rollback success
+        run: |
+          curl -f ${{ env.PRODUCTION_FRONTEND_A_URL }}/health
+          curl -f https://api.synvelo.com/health
+
+      - name: Alert team of rollback
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          text: |
+            🚨 EMERGENCY: Production rollback executed
+            Please investigate deployment issues immediately.
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  # =====================================================
+  # SECURITY SCAN - Post-deployment security verification
+  # =====================================================
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: OWASP ZAP security scan
+        uses: zaproxy/action-full-scan@v0.7.0
+        with:
+          target: ${{ env.PRODUCTION_FRONTEND_A_URL }}
+
+      - name: SSL/TLS configuration check
+        run: |
+          npm run security:ssl-check -- ${{ env.PRODUCTION_FRONTEND_A_URL }}
+          npm run security:ssl-check -- ${{ env.PRODUCTION_FRONTEND_B_URL }}
+
+      - name: Dependency vulnerability check
+        run: |
+          npm audit --production --audit-level=high
+          npm run security:snyk-test
+
+      - name: Upload security report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scan-report
+          path: security-report/

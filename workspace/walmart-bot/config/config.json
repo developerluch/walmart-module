@@ -1,0 +1,49 @@
+{
+  "account": {
+    "email": "user@example.com",
+    "password": "encrypted_password",
+    "otpMethod": "email",
+    "gmailCredentials": "config/gmail_credentials.json"
+  },
+  "checkout": {
+    "autoCheckout": true,
+    "maxRetries": 3,
+    "delayMs": 3333,
+    "savedPayment": true,
+    "paymentMethodId": ""
+  },
+  "proxies": {
+    "listFile": "config/proxies.txt",
+    "rotateOnFailure": true,
+    "healthCheckInterval": 60,
+    "rotationInterval": 180
+  },
+  "logging": {
+    "level": "info",
+    "captureRequests": true,
+    "discordWebhook": "https://discord.com/api/webhooks/YOUR_WEBHOOK_HERE",
+    "logFile": "logs/walmart-bot.log"
+  },
+  "monitoring": {
+    "dashboardPort": 8080,
+    "metricsEnabled": true,
+    "websocketPort": 8081
+  },
+  "items": [
+    "https://www.walmart.com/ip/item-id-1",
+    "https://www.walmart.com/ip/item-id-2"
+  ],
+  "protection": {
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "randomizeTimings": true,
+    "minDelay": 1000,
+    "maxDelay": 5000,
+    "browserBehavior": true
+  },
+  "queue": {
+    "maxWorkers": 5,
+    "maxQueueSize": 100,
+    "retryBackoff": 2.0,
+    "maxRetryDelay": 60000
+  }
+}

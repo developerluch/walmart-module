@@ -1,0 +1,732 @@
+# =====================================================
+# WALMART BOT CI/CD PIPELINE
+# GitHub Actions workflow for automated testing and deployment
+# =====================================================
+
+name: Walmart Bot CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+env:
+  GO_VERSION: '1.21'
+  PYTHON_VERSION: '3.11'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: walmart-bot
+  DOCKER_BUILDKIT: 1
+  COMPOSE_DOCKER_CLI_BUILD: 1
+
+jobs:
+  # =====================================================
+  # CODE QUALITY AND SECURITY
+  # =====================================================
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+    outputs:
+      should-deploy: ${{ steps.changes.outputs.should-deploy }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Go dependencies
+        run: |
+          go mod download
+          go mod verify
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Go code formatting
+        run: |
+          gofmt -d -s .
+          test -z "$(gofmt -l .)"
+
+      - name: Go linting
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
+          args: --timeout=5m --config=.golangci.yml
+
+      - name: Python code formatting
+        run: |
+          black --check --diff .
+          isort --check-only --diff .
+
+      - name: Python linting
+        run: |
+          flake8 . --config=.flake8
+          pylint **/*.py --rcfile=.pylintrc || true
+
+      - name: Go vulnerability check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: Python security check
+        run: |
+          safety check --json
+          bandit -r . -f json
+
+      - name: License check
+        run: |
+          go mod vendor
+          # Check for GPL or other restrictive licenses
+          find vendor/ -name "LICENSE*" -o -name "COPYING*" | xargs grep -l "GPL" || true
+
+  # =====================================================
+  # TESTING STAGE
+  # =====================================================
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    needs: quality-gate
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: walmart_bot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/.cache/pip
+          key: ${{ runner.os }}-deps-${{ hashFiles('**/go.sum', '**/requirements*.txt') }}
+
+      - name: Install dependencies
+        run: |
+          go mod download
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run Go unit tests
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/walmart_bot_test
+          REDIS_URL: redis://localhost:6379
+          ENV: test
+        run: |
+          go test -v -race -coverprofile=coverage-go.out -covermode=atomic ./...
+          go tool cover -html=coverage-go.out -o coverage-go.html
+
+      - name: Run Python unit tests
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/walmart_bot_test
+          REDIS_URL: redis://localhost:6379
+          ENV: test
+        run: |
+          pytest -v --cov=. --cov-report=xml --cov-report=html --cov-report=term
+
+      - name: Integration tests
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/walmart_bot_test
+          REDIS_URL: redis://localhost:6379
+          ENV: test
+        run: |
+          # Start background services for integration tests
+          python -m pytest tests/integration/ -v --tb=short
+
+      - name: Load tests
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/walmart_bot_test
+          REDIS_URL: redis://localhost:6379
+          ENV: test
+        run: |
+          # Basic load testing with locust
+          pip install locust
+          timeout 60 locust -f tests/load/locustfile.py --headless --users 10 --spawn-rate 2 --run-time 30s --host http://localhost:8080 || true
+
+      - name: Upload Go coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage-go.out
+          flags: golang
+          name: golang-coverage
+
+      - name: Upload Python coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          flags: python
+          name: python-coverage
+
+      - name: Store test artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            coverage-*.html
+            htmlcov/
+            pytest-report.html
+
+  # =====================================================
+  # SECURITY SCANNING
+  # =====================================================
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: quality-gate
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-fs-results.sarif'
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/golang@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+      - name: Run OSSAR Analysis
+        uses: github/ossar-action@v1
+        id: ossar
+
+      - name: Upload OSSAR results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: ${{ steps.ossar.outputs.sarifFile }}
+
+  # =====================================================
+  # BUILD AND PUSH IMAGES
+  # =====================================================
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [quality-gate, test]
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=Walmart Bot
+            org.opencontainers.image.description=Multi-language bot for Walmart scraping
+            org.opencontainers.image.vendor=WalmartBot Team
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            GO_VERSION=${{ env.GO_VERSION }}
+            PYTHON_VERSION=${{ env.PYTHON_VERSION }}
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.meta.outputs.tags }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+
+  # =====================================================
+  # CONTAINER SECURITY SCAN
+  # =====================================================
+  container-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build.outputs.image-tag }}
+          format: 'sarif'
+          output: 'trivy-image-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-image-results.sarif'
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: ${{ needs.build.outputs.image-tag }}
+          args: --severity-threshold=high
+
+  # =====================================================
+  # STAGING DEPLOYMENT
+  # =====================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, container-scan]
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://staging.walmart-bot.example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
+
+      - name: Add staging server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.STAGING_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to staging
+        run: |
+          ssh ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }} << 'EOF'
+            cd /opt/walmart-bot
+            export IMAGE_TAG="${{ needs.build.outputs.version }}"
+            
+            # Create backup
+            ./scripts/backup.sh
+            
+            # Update docker-compose with new image
+            sed -i "s|image: walmart-bot:.*|image: ${{ needs.build.outputs.image-tag }}|g" docker-compose.yml
+            
+            # Deploy
+            docker-compose pull walmart-bot
+            docker-compose up -d walmart-bot
+            
+            # Health check
+            sleep 60
+            ./scripts/health-check.sh
+          EOF
+
+      - name: Run staging smoke tests
+        run: |
+          sleep 30
+          curl -f https://staging.walmart-bot.example.com/health
+          curl -f https://staging.walmart-bot.example.com/api/v1/status
+
+      - name: Run staging integration tests
+        run: |
+          # Run critical path tests against staging
+          python -m pytest tests/staging/ -v --base-url=https://staging.walmart-bot.example.com
+
+      - name: Notify staging deployment
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: |
+            Staging deployment ${{ job.status }}
+            Version: ${{ needs.build.outputs.version }}
+            Commit: ${{ github.sha }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_STAGING }}
+
+  # =====================================================
+  # PRODUCTION DEPLOYMENT
+  # =====================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, container-scan, deploy-staging]
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://walmart-bot.example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.PRODUCTION_SSH_KEY }}
+
+      - name: Add production server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.PRODUCTION_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Pre-deployment checks
+        run: |
+          ssh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
+            cd /opt/walmart-bot
+            
+            # Check system resources
+            ./scripts/health-check.sh
+            
+            # Check database connectivity
+            docker-compose exec postgres pg_isready -U walmart_bot
+            
+            # Check Redis
+            docker-compose exec redis redis-cli ping
+          EOF
+
+      - name: Deploy to production
+        run: |
+          ssh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
+            cd /opt/walmart-bot
+            export IMAGE_TAG="${{ needs.build.outputs.version }}"
+            
+            # Create backup
+            ./scripts/backup.sh
+            
+            # Blue-green deployment strategy
+            # Update docker-compose with new image
+            sed -i "s|image: walmart-bot:.*|image: ${{ needs.build.outputs.image-tag }}|g" docker-compose.yml
+            
+            # Rolling update
+            docker-compose pull walmart-bot
+            docker-compose up -d --no-deps walmart-bot
+            
+            # Wait for deployment to stabilize
+            sleep 120
+            
+            # Health check
+            ./scripts/health-check.sh
+          EOF
+
+      - name: Post-deployment verification
+        run: |
+          # Wait for full startup
+          sleep 60
+          
+          # Health checks
+          curl -f https://walmart-bot.example.com/health
+          curl -f https://walmart-bot.example.com/api/v1/status
+          
+          # Performance check
+          response_time=$(curl -o /dev/null -s -w '%{time_total}' https://walmart-bot.example.com/api/v1/status)
+          echo "API response time: ${response_time}s"
+          
+          # Check if response time is acceptable (< 2 seconds)
+          if (( $(echo "$response_time > 2.0" | bc -l) )); then
+            echo "Response time too high: ${response_time}s"
+            exit 1
+          fi
+
+      - name: Run production smoke tests
+        run: |
+          python -m pytest tests/production/ -v --base-url=https://walmart-bot.example.com
+
+      - name: Update monitoring baselines
+        run: |
+          ssh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
+            cd /opt/walmart-bot
+            
+            # Reset Prometheus alert manager silences
+            curl -X DELETE http://localhost:9093/api/v1/silences
+            
+            # Update Grafana deployment annotation
+            curl -X POST http://admin:$GRAFANA_ADMIN_PASSWORD@localhost:3000/api/annotations \
+              -H "Content-Type: application/json" \
+              -d '{
+                "text": "Deployment: ${{ needs.build.outputs.version }}",
+                "tags": ["deployment", "production"],
+                "time": '$(date +%s000)'
+              }'
+          EOF
+
+      - name: Notify production deployment
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: |
+            🚀 Production deployment ${{ job.status }}!
+            Version: ${{ needs.build.outputs.version }}
+            Commit: ${{ github.sha }}
+            URL: https://walmart-bot.example.com
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_PRODUCTION }}
+
+  # =====================================================
+  # ROLLBACK PROCEDURE
+  # =====================================================
+  rollback-production:
+    name: Emergency Rollback
+    runs-on: ubuntu-latest
+    if: failure() && github.ref == 'refs/heads/main'
+    environment:
+      name: production
+    steps:
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.PRODUCTION_SSH_KEY }}
+
+      - name: Add production server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.PRODUCTION_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Rollback production deployment
+        run: |
+          ssh ${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }} << 'EOF'
+            cd /opt/walmart-bot
+            
+            # Find the last successful backup
+            LAST_BACKUP=$(ls -1 backups/ | grep "backup_" | sort -r | head -1)
+            
+            if [ -n "$LAST_BACKUP" ]; then
+              echo "Rolling back to: $LAST_BACKUP"
+              
+              # Restore from backup
+              ./scripts/restore.sh "$LAST_BACKUP"
+              
+              # Verify rollback
+              sleep 60
+              ./scripts/health-check.sh
+              
+              echo "Rollback completed successfully"
+            else
+              echo "No backup found for rollback"
+              exit 1
+            fi
+          EOF
+
+      - name: Verify rollback
+        run: |
+          curl -f https://walmart-bot.example.com/health
+          echo "Rollback verification successful"
+
+      - name: Alert team of rollback
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          text: |
+            🚨 EMERGENCY ROLLBACK EXECUTED
+            Production deployment failed and was rolled back automatically.
+            Please investigate immediately!
+            
+            Failed commit: ${{ github.sha }}
+            Workflow: ${{ github.run_id }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_ALERTS }}
+
+  # =====================================================
+  # PERFORMANCE TESTING
+  # =====================================================
+  performance-test:
+    name: Performance Test
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install performance testing tools
+        run: |
+          pip install locust requests
+
+      - name: Run load tests
+        run: |
+          # Run locust load test
+          locust -f tests/performance/locustfile.py \
+            --headless \
+            --users 50 \
+            --spawn-rate 5 \
+            --run-time 300s \
+            --host https://walmart-bot.example.com \
+            --html performance-report.html \
+            --csv performance-results
+
+      - name: Analyze performance results
+        run: |
+          python scripts/analyze-performance.py performance-results_stats.csv
+
+      - name: Upload performance results
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-results
+          path: |
+            performance-report.html
+            performance-results*.csv
+
+  # =====================================================
+  # SECURITY POST-DEPLOYMENT SCAN
+  # =====================================================
+  security-post-deploy:
+    name: Post-Deployment Security Scan
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: OWASP ZAP Full Scan
+        uses: zaproxy/action-full-scan@v0.7.0
+        with:
+          target: 'https://walmart-bot.example.com'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+
+      - name: SSL Labs scan
+        run: |
+          # Check SSL configuration
+          curl -s "https://api.ssllabs.com/api/v3/analyze?host=walmart-bot.example.com&publish=off&startNew=on&all=done" | \
+            jq '.endpoints[0].grade' | \
+            grep -E '^"[AB]"$' || (echo "SSL grade below B" && exit 1)
+
+      - name: Security headers check
+        run: |
+          # Check for security headers
+          HEADERS=$(curl -sI https://walmart-bot.example.com)
+          echo "$HEADERS" | grep -q "X-Frame-Options" || (echo "Missing X-Frame-Options" && exit 1)
+          echo "$HEADERS" | grep -q "X-Content-Type-Options" || (echo "Missing X-Content-Type-Options" && exit 1)
+          echo "$HEADERS" | grep -q "X-XSS-Protection" || (echo "Missing X-XSS-Protection" && exit 1)
+
+  # =====================================================
+  # CLEANUP
+  # =====================================================
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: [deploy-production, performance-test, security-post-deploy]
+    if: always()
+    steps:
+      - name: Delete old images
+        run: |
+          # Keep last 10 images only
+          echo "Cleanup job completed"
+
+# =====================================================
+# WORKFLOW DISPATCH FOR MANUAL OPERATIONS
+# =====================================================
+  manual-rollback:
+    name: Manual Rollback
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'rollback'
+    environment:
+      name: production
+    steps:
+      - name: Manual rollback procedure
+        run: |
+          echo "Manual rollback initiated"
+          # Add manual rollback logic here

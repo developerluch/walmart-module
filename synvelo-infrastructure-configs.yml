@@ -1,0 +1,529 @@
+# Infrastructure Configuration Files for Synvelo
+
+# =====================================================
+# VERCEL CONFIGURATION - Frontend Deployment
+# =====================================================
+
+# vercel.json (Site A - Marketing)
+site_a_vercel_config: |
+  {
+    "version": 2,
+    "name": "synvelo-site-a",
+    "builds": [
+      {
+        "src": "package.json",
+        "use": "@vercel/next"
+      }
+    ],
+    "routes": [
+      {
+        "src": "/api/(.*)",
+        "dest": "https://api.synvelo.com/api/$1"
+      },
+      {
+        "src": "/(.*)",
+        "dest": "/$1"
+      }
+    ],
+    "env": {
+      "NEXT_PUBLIC_API_URL": "https://api.synvelo.com",
+      "NEXT_PUBLIC_WS_URL": "wss://ws.synvelo.com",
+      "NEXT_PUBLIC_ENVIRONMENT": "production"
+    },
+    "headers": [
+      {
+        "source": "/(.*)",
+        "headers": [
+          {
+            "key": "X-Frame-Options",
+            "value": "DENY"
+          },
+          {
+            "key": "X-Content-Type-Options",
+            "value": "nosniff"
+          },
+          {
+            "key": "X-XSS-Protection",
+            "value": "1; mode=block"
+          },
+          {
+            "key": "Strict-Transport-Security",
+            "value": "max-age=31536000; includeSubDomains"
+          }
+        ]
+      },
+      {
+        "source": "/static/(.*)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=31536000, immutable"
+          }
+        ]
+      }
+    ],
+    "redirects": [
+      {
+        "source": "/dashboard",
+        "destination": "https://dashboard.synvelo.com",
+        "permanent": true
+      }
+    ],
+    "rewrites": [
+      {
+        "source": "/sitemap.xml",
+        "destination": "/api/sitemap"
+      }
+    ]
+  }
+
+# vercel.json (Site B - Dashboard)
+site_b_vercel_config: |
+  {
+    "version": 2,
+    "name": "synvelo-site-b",
+    "builds": [
+      {
+        "src": "package.json",
+        "use": "@vercel/next"
+      }
+    ],
+    "routes": [
+      {
+        "src": "/api/(.*)",
+        "dest": "https://api.synvelo.com/api/$1"
+      }
+    ],
+    "env": {
+      "NEXT_PUBLIC_API_URL": "https://api.synvelo.com",
+      "NEXT_PUBLIC_WS_URL": "wss://ws.synvelo.com",
+      "NEXT_PUBLIC_ENVIRONMENT": "production",
+      "NEXT_PUBLIC_STRIPE_PUBLIC_KEY": "@stripe_public_key"
+    },
+    "functions": {
+      "app/api/**/*.js": {
+        "maxDuration": 30
+      }
+    },
+    "crons": [
+      {
+        "path": "/api/cron/cleanup",
+        "schedule": "0 2 * * *"
+      }
+    ]
+  }
+
+# =====================================================
+# RAILWAY CONFIGURATION - Backend Services
+# =====================================================
+
+# railway.json
+railway_config: |
+  {
+    "deploy": {
+      "restartPolicyType": "ON_FAILURE",
+      "replicas": 2
+    },
+    "environments": {
+      "production": {
+        "variables": {
+          "NODE_ENV": "production",
+          "DATABASE_URL": "${{Postgres.DATABASE_URL}}",
+          "REDIS_URL": "${{Redis.REDIS_URL}}",
+          "JWT_SECRET": "${{JWT_SECRET}}",
+          "STRIPE_SECRET_KEY": "${{STRIPE_SECRET_KEY}}",
+          "STRIPE_WEBHOOK_SECRET": "${{STRIPE_WEBHOOK_SECRET}}"
+        }
+      },
+      "staging": {
+        "variables": {
+          "NODE_ENV": "staging",
+          "DATABASE_URL": "${{Postgres_Staging.DATABASE_URL}}",
+          "REDIS_URL": "${{Redis_Staging.REDIS_URL}}"
+        }
+      }
+    },
+    "services": {
+      "api-gateway": {
+        "source": "./apps/api",
+        "variables": {
+          "PORT": "8000"
+        },
+        "domains": ["api.synvelo.com", "api-staging.synvelo.dev"],
+        "healthcheckPath": "/health",
+        "healthcheckTimeout": 300,
+        "restartPolicyMaxRetries": 3
+      },
+      "websocket-service": {
+        "source": "./apps/websocket", 
+        "variables": {
+          "PORT": "8001"
+        },
+        "domains": ["ws.synvelo.com", "ws-staging.synvelo.dev"],
+        "healthcheckPath": "/health"
+      },
+      "webhook-processor": {
+        "source": "./apps/webhooks",
+        "variables": {
+          "PORT": "8002"
+        },
+        "domains": ["webhooks.synvelo.com"]
+      }
+    }
+  }
+
+# =====================================================
+# DOCKER CONFIGURATIONS
+# =====================================================
+
+# Dockerfile.api
+dockerfile_api: |
+  FROM node:18-alpine AS base
+  WORKDIR /app
+  
+  # Dependencies
+  FROM base AS deps
+  RUN apk add --no-cache libc6-compat
+  COPY package*.json ./
+  RUN npm ci --only=production && npm cache clean --force
+  
+  # Build
+  FROM base AS builder
+  COPY package*.json ./
+  RUN npm ci
+  COPY . .
+  RUN npm run build
+  
+  # Production
+  FROM base AS runner
+  RUN addgroup --system --gid 1001 nodejs
+  RUN adduser --system --uid 1001 nextjs
+  
+  COPY --from=deps /app/node_modules ./node_modules
+  COPY --from=builder /app/dist ./dist
+  COPY package*.json ./
+  
+  USER nextjs
+  EXPOSE 8000
+  ENV PORT 8000
+  
+  HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+  
+  CMD ["node", "dist/index.js"]
+
+# docker-compose.yml (Development)
+docker_compose_dev: |
+  version: '3.8'
+  
+  services:
+    api:
+      build:
+        context: ./apps/api
+        dockerfile: Dockerfile.dev
+      ports:
+        - "8000:8000"
+      environment:
+        - NODE_ENV=development
+        - DATABASE_URL=postgresql://postgres:password@postgres:5432/synvelo_dev
+        - REDIS_URL=redis://redis:6379
+      volumes:
+        - ./apps/api:/app
+        - /app/node_modules
+      depends_on:
+        - postgres
+        - redis
+    
+    websocket:
+      build:
+        context: ./apps/websocket
+        dockerfile: Dockerfile.dev
+      ports:
+        - "8001:8001"
+      environment:
+        - NODE_ENV=development
+        - REDIS_URL=redis://redis:6379
+      depends_on:
+        - redis
+    
+    postgres:
+      image: postgres:15-alpine
+      environment:
+        - POSTGRES_DB=synvelo_dev
+        - POSTGRES_USER=postgres
+        - POSTGRES_PASSWORD=password
+      ports:
+        - "5432:5432"
+      volumes:
+        - postgres_data:/var/lib/postgresql/data
+    
+    redis:
+      image: redis:7-alpine
+      ports:
+        - "6379:6379"
+      volumes:
+        - redis_data:/data
+    
+    nginx:
+      image: nginx:alpine
+      ports:
+        - "80:80"
+      volumes:
+        - ./nginx.conf:/etc/nginx/nginx.conf
+      depends_on:
+        - api
+        - websocket
+  
+  volumes:
+    postgres_data:
+    redis_data:
+
+# =====================================================
+# CLOUDFLARE CONFIGURATION
+# =====================================================
+
+# cloudflare-config.yml
+cloudflare_config: |
+  zones:
+    synvelo.com:
+      settings:
+        ssl: "strict"
+        security_level: "high"
+        challenge_ttl: 1800
+        browser_check: "on"
+        hotlink_protection: "on"
+        
+      dns_records:
+        - type: "CNAME"
+          name: "app"
+          content: "cname.vercel-dns.com"
+          proxied: true
+        - type: "CNAME"
+          name: "dashboard"
+          content: "cname.vercel-dns.com" 
+          proxied: true
+        - type: "CNAME"
+          name: "api"
+          content: "up.railway.app"
+          proxied: true
+        - type: "CNAME"
+          name: "ws"
+          content: "up.railway.app"
+          proxied: true
+          
+      page_rules:
+        - targets: "app.synvelo.com/static/*"
+          actions:
+            cache_level: "cache_everything"
+            edge_cache_ttl: 31536000
+        - targets: "api.synvelo.com/*"
+          actions:
+            cache_level: "bypass"
+            
+      firewall_rules:
+        - expression: "(http.request.method eq \"POST\" and http.request.uri.path contains \"/webhooks\")"
+          action: "allow"
+          description: "Allow Stripe webhooks"
+        - expression: "(cf.threat_score gt 20)"
+          action: "challenge"
+          description: "Challenge suspicious traffic"
+
+# =====================================================
+# MONITORING & ALERTING CONFIGURATION
+# =====================================================
+
+# datadog-config.yml
+monitoring_config: |
+  datadog:
+    api_key: "${DATADOG_API_KEY}"
+    app_key: "${DATADOG_APP_KEY}"
+    
+    dashboards:
+      synvelo_overview:
+        widgets:
+          - type: "timeseries"
+            title: "API Response Time"
+            requests:
+              - q: "avg:trace.express.request.duration{service:api-gateway}"
+          - type: "query_value"
+            title: "Error Rate"
+            requests:
+              - q: "sum:trace.express.request.errors{service:api-gateway}.as_rate()"
+          - type: "toplist"
+            title: "Slowest Endpoints"
+            requests:
+              - q: "top(avg:trace.express.request.duration{service:api-gateway} by {resource_name}, 10, 'max', 'desc')"
+    
+    monitors:
+      api_response_time:
+        type: "metric alert"
+        query: "avg(last_5m):avg:trace.express.request.duration{service:api-gateway} > 1"
+        message: |
+          API response time is above 1 second.
+          @slack-devops @pagerduty-synvelo
+        options:
+          thresholds:
+            critical: 1.0
+            warning: 0.5
+            
+      error_rate:
+        type: "metric alert"  
+        query: "avg(last_5m):sum:trace.express.request.errors{service:api-gateway}.as_rate() > 0.05"
+        message: |
+          Error rate is above 5%.
+          @slack-devops @pagerduty-synvelo
+        options:
+          thresholds:
+            critical: 0.05
+            warning: 0.01
+
+# uptime-robot-config.yml
+uptime_monitoring: |
+  monitors:
+    - friendly_name: "Synvelo App Site"
+      url: "https://app.synvelo.com"
+      type: 1  # HTTP(s)
+      interval: 300  # 5 minutes
+      timeout: 30
+      keyword_type: 1
+      keyword_value: "<!DOCTYPE html>"
+      
+    - friendly_name: "Synvelo Dashboard"
+      url: "https://dashboard.synvelo.com/login"
+      type: 1
+      interval: 300
+      timeout: 30
+      
+    - friendly_name: "Synvelo API Health"
+      url: "https://api.synvelo.com/health"
+      type: 1
+      interval: 60  # 1 minute
+      timeout: 10
+      keyword_type: 1
+      keyword_value: '"status":"healthy"'
+      
+    - friendly_name: "Synvelo WebSocket"
+      url: "wss://ws.synvelo.com"
+      type: 4  # WebSocket
+      interval: 300
+      timeout: 10
+      
+  alert_contacts:
+    - friendly_name: "DevOps Slack"
+      type: 11  # Slack
+      value: "${SLACK_WEBHOOK_URL}"
+      
+    - friendly_name: "On-Call PagerDuty"
+      type: 15  # PagerDuty
+      value: "${PAGERDUTY_INTEGRATION_KEY}"
+
+# =====================================================
+# BACKUP & DISASTER RECOVERY
+# =====================================================
+
+# backup-strategy.yml
+backup_config: |
+  database:
+    postgresql:
+      schedule: "0 2 * * *"  # Daily at 2 AM UTC
+      retention:
+        daily: 30
+        weekly: 12
+        monthly: 12
+      encryption: true
+      compression: true
+      
+    redis:
+      schedule: "0 3 * * *"  # Daily at 3 AM UTC
+      retention:
+        daily: 7
+        weekly: 4
+      
+  file_storage:
+    user_uploads:
+      schedule: "0 4 * * *"  # Daily at 4 AM UTC
+      retention: 90
+      
+    application_logs:
+      schedule: "0 1 * * *"  # Daily at 1 AM UTC
+      retention: 30
+      
+  disaster_recovery:
+    rto_targets:
+      critical_systems: "< 1 hour"
+      standard_systems: "< 4 hours"
+      non_critical: "< 24 hours"
+      
+    rpo_targets:
+      database: "< 15 minutes"
+      file_storage: "< 1 hour"
+      configuration: "< 5 minutes"
+      
+    recovery_procedures:
+      database_failover: |
+        1. Promote read replica to primary
+        2. Update DNS records
+        3. Restart application services
+        4. Verify data integrity
+        
+      application_recovery: |
+        1. Deploy from last known good commit
+        2. Run health checks
+        3. Verify external integrations
+        4. Monitor error rates
+
+# =====================================================
+# SECURITY CONFIGURATION
+# =====================================================
+
+# security-config.yml
+security_config: |
+  ssl_certificates:
+    provider: "Cloudflare"
+    auto_renewal: true
+    min_tls_version: "1.2"
+    cipher_suites: "ECDHE-RSA-AES256-GCM-SHA384"
+    
+  content_security_policy:
+    default-src: "'self'"
+    script-src: "'self' 'unsafe-inline' https://js.stripe.com"
+    style-src: "'self' 'unsafe-inline' https://fonts.googleapis.com"
+    font-src: "'self' https://fonts.gstatic.com"
+    img-src: "'self' data: https:"
+    connect-src: "'self' https://api.stripe.com wss://ws.synvelo.com"
+    
+  rate_limiting:
+    api_general:
+      window: "15m"
+      max_requests: 1000
+      
+    api_auth:
+      window: "15m"
+      max_requests: 10
+      
+    webhooks:
+      window: "1m"
+      max_requests: 100
+      
+  authentication:
+    jwt:
+      algorithm: "RS256"
+      access_token_ttl: "15m"
+      refresh_token_ttl: "7d"
+      
+    oauth_providers:
+      - google
+      - github
+      
+    mfa:
+      enabled: true
+      backup_codes: true
+      
+  webhook_security:
+    stripe:
+      verify_signatures: true
+      allowed_ips:
+        - "3.18.12.63"
+        - "3.130.192.231"
+        - "13.235.14.237"
+        - "13.235.122.149"
