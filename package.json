@@ -39,7 +39,7 @@
     "lru-cache": "^11.1.0",
     "node-pty": "^1.0.0",
     "open": "^10.0.3",
-    "puppeteer": "^24.18.0",
+    "puppeteer": "^24.24.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {
